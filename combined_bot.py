@@ -17,14 +17,12 @@ import joblib
 try:
     spam_model = joblib.load('spam_model.pkl')
     vectorizer = joblib.load('vectorizer.pkl')
-except Exception as e:
+except (FileNotFoundError, joblib.externals.loky.process_executor._RemoteTraceback) as e:
     logging.error(f"Error loading spam detection model or vectorizer: {e}")
     spam_model = None
     vectorizer = None
 
-
-# Helper Functions
-async def get_user_groups_with_topics(client):
+async def get_user_groups_with_topics(client: TelegramClient) -> list:
     """
     Retrieves a list of groups and channels with topics that the user is a part of.
     """
@@ -41,8 +39,7 @@ async def get_user_groups_with_topics(client):
         logging.error(f"Error retrieving groups: {e}")
     return groups_with_topics
 
-
-async def auto_reply(client, event, reply_message):
+async def auto_reply(client: TelegramClient, event: events.NewMessage.Event, reply_message: str) -> None:
     """
     Automatically replies to messages with a predefined message.
     """
@@ -52,8 +49,7 @@ async def auto_reply(client, event, reply_message):
     except Exception as e:
         logging.error(f"Error sending auto-reply to user {event.sender_id}: {e}")
 
-
-async def detect_spam(message):
+async def detect_spam(message: str) -> bool:
     """
     Detects spam messages using a Naive Bayes classifier.
     """
@@ -68,8 +64,7 @@ async def detect_spam(message):
         logging.error(f"Error during spam detection: {e}")
         return False
 
-
-async def schedule_message(client, user_id, message, send_time):
+async def schedule_message(client: TelegramClient, user_id: int, message: str, send_time: datetime) -> None:
     """
     Sends a message to a user at a scheduled time.
     """
@@ -78,12 +73,11 @@ async def schedule_message(client, user_id, message, send_time):
         await asyncio.sleep(delay)
     await client.send_message(user_id, message)
 
-
 class ForwardingHistory:
     def __init__(self):
         self.history = []
 
-    def add_entry(self, source_group, target_group, message_id, timestamp):
+    def add_entry(self, source_group: str, target_group: str, message_id: int, timestamp: str) -> None:
         self.history.append({
             "source_group": source_group,
             "target_group": target_group,
@@ -91,36 +85,33 @@ class ForwardingHistory:
             "timestamp": timestamp,
         })
 
-    def get_history(self):
+    def get_history(self) -> list:
         return self.history
-
 
 class ForwardingStatistics:
     def __init__(self):
         self.statistics = defaultdict(int)
 
-    def increment(self, group_id):
+    def increment(self, group_id: int) -> None:
         self.statistics[group_id] += 1
 
-    def get_statistics(self):
+    def get_statistics(self) -> dict:
         return self.statistics
-
 
 class UserManagement:
     def __init__(self):
         self.users = set()
 
-    def add_user(self, user_id):
+    def add_user(self, user_id: int) -> None:
         self.users.add(user_id)
         logging.info(f"User {user_id} added to the list")
 
-    def remove_user(self, user_id):
+    def remove_user(self, user_id: int) -> None:
         self.users.discard(user_id)
         logging.info(f"User {user_id} removed from the list")
 
-    def get_users(self):
+    def get_users(self) -> list:
         return list(self.users)
-
 
 class TelegramBotGUI:
     def __init__(self):
@@ -133,7 +124,7 @@ class TelegramBotGUI:
         self.forwarding_history = ForwardingHistory()
         self.forwarding_statistics = ForwardingStatistics()
 
-    def start(self):
+    def start(self) -> None:
         layout = [
             [sg.Text("Phone Number:"), sg.Input(key="-PHONE-", size=(30, 1))],
             [sg.Button("Send Verification Code", key="-SEND_CODE-")],
@@ -170,7 +161,7 @@ class TelegramBotGUI:
 
         self.window.close()
 
-    async def send_verification_code(self, phone):
+    async def send_verification_code(self, phone: str) -> None:
         if not phone or not phone.startswith("+"):
             self.log_message("Please enter a valid phone number starting with +.")
             return
@@ -182,7 +173,7 @@ class TelegramBotGUI:
         except Exception as e:
             self.log_message(f"Error sending verification code: {e}")
 
-    async def login(self, phone, code):
+    async def login(self, phone: str, code: str) -> None:
         if not code.strip():
             self.log_message("Please enter a valid verification code.")
             return
@@ -192,7 +183,7 @@ class TelegramBotGUI:
         except Exception as e:
             self.log_message(f"Error during login: {e}")
 
-    async def refresh_groups(self):
+    async def refresh_groups(self) -> None:
         try:
             self.groups_with_topics = await get_user_groups_with_topics(self.client)
             self.update_groups()
@@ -200,10 +191,10 @@ class TelegramBotGUI:
         except Exception as e:
             self.log_message(f"Error refreshing groups: {e}")
 
-    def update_groups(self):
+    def update_groups(self) -> None:
         self.window["-SOURCE_GROUP-"].update([group.title for group, _ in self.groups_with_topics])
 
-    async def schedule_message(self):
+    async def schedule_message(self) -> None:
         user_id = sg.popup_get_text("Enter user ID:")
         message = sg.popup_get_text("Enter your message:")
         send_time = sg.popup_get_text("Enter send time (YYYY-MM-DD HH:MM:SS):")
@@ -222,14 +213,14 @@ class TelegramBotGUI:
         except Exception as e:
             self.log_message(f"Error scheduling message: {e}")
 
-    def view_forwarding_history(self):
+    def view_forwarding_history(self) -> None:
         history = self.forwarding_history.get_history()
         history_str = "\n".join(
             [f"{entry['timestamp']}: Message {entry['message_id']} from {entry['source_group']} to {entry['target_group']}" for entry in history]
         )
         sg.popup("Forwarding History", history_str)
 
-    def view_forwarding_statistics(self):
+    def view_forwarding_statistics(self) -> None:
         stats = self.forwarding_statistics.get_statistics()
         if not stats:
             sg.popup("Forwarding Statistics", "No statistics available.")
@@ -237,14 +228,12 @@ class TelegramBotGUI:
         stats_str = "\n".join([f"Group {group_id}: {count} messages forwarded" for group_id, count in stats.items()])
         sg.popup("Forwarding Statistics", stats_str)
 
-    async def forward_messages_to_groups(self):
+    async def forward_messages_to_groups(self) -> None:
         """
         Configures forwarding messages from a source group to multiple target groups.
         """
-        # Refresh and fetch the list of groups the user is a member of
         await self.refresh_groups()
 
-        # Display all groups in a Listbox for source group selection
         source_group_titles = [group.title for group, _ in self.groups_with_topics]
         source_group_layout = [
             [sg.Text("Select the source group:")],
@@ -268,7 +257,6 @@ class TelegramBotGUI:
                 else:
                     sg.popup("Please select a source group.")
 
-        # Display all groups in a Listbox for target group selection
         target_group_layout = [
             [sg.Text("Select the target groups (hold Ctrl to select multiple):")],
             [sg.Listbox(values=source_group_titles, size=(50, 10), key="-TARGET_GROUPS-", select_mode="multiple")],
@@ -292,7 +280,6 @@ class TelegramBotGUI:
                     sg.popup("Please select at least one target group.")
 
         try:
-            # Map group titles to their corresponding group objects
             source_group_obj = next(group for group, _ in self.groups_with_topics if group.title == source_group)
             target_group_objs = [
                 group for group, _ in self.groups_with_topics if group.title in target_groups
@@ -302,7 +289,6 @@ class TelegramBotGUI:
                 self.log_message("No valid target groups selected.")
                 return
 
-            # Set up the forwarding handler
             handler_key = f"{source_group_obj.id}_to_{'_'.join([str(tg.id) for tg in target_group_objs])}"
             if handler_key in self.active_handlers:
                 self.log_message("Handler for this forwarding configuration is already active.")
@@ -312,7 +298,6 @@ class TelegramBotGUI:
             async def handler(event):
                 for target_group in target_group_objs:
                     try:
-                        # Forward the message to each target group
                         await self.client.forward_messages(target_group.id, event.message)
                         self.forwarding_statistics.increment(target_group.id)
                         self.forwarding_history.add_entry(
@@ -328,14 +313,13 @@ class TelegramBotGUI:
         except Exception as e:
             self.log_message(f"Error setting up forwarding: {e}")
 
-    def log_message(self, message, max_lines=100):
+    def log_message(self, message: str, max_lines: int = 100) -> None:
         current_log = self.window["-LOG-"].get()
         log_lines = current_log.splitlines()
         log_lines.append(message)
         if len(log_lines) > max_lines:
             log_lines = log_lines[-max_lines:]
         self.window["-LOG-"].update("\n".join(log_lines))
-
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
