@@ -11,71 +11,11 @@ from telethon.sessions import StringSession
 import PySimpleGUI as sg
 from config import API_ID, API_HASH
 from datetime import datetime, timedelta
-import joblib
-
-# Load pre-trained spam detection model and vectorizer
-try:
-    spam_model = joblib.load('spam_model.pkl')
-    vectorizer = joblib.load('vectorizer.pkl')
-except (FileNotFoundError, joblib.externals.loky.process_executor._RemoteTraceback) as e:
-    logging.error(f"Error loading spam detection model or vectorizer: {e}")
-    spam_model = None
-    vectorizer = None
-
-async def get_user_groups_with_topics(client: TelegramClient) -> list:
-    """
-    Retrieves a list of groups and channels with topics that the user is a part of.
-    """
-    groups_with_topics = []
-    try:
-        async for dialog in client.iter_dialogs():
-            if dialog.is_group:
-                group_topics = []  # Replace with logic to retrieve group topics
-                groups_with_topics.append((dialog, group_topics))
-            elif dialog.is_channel and dialog.megagroup:
-                channel_topics = []  # Replace with logic to retrieve channel topics
-                groups_with_topics.append((dialog, channel_topics))
-    except Exception as e:
-        logging.error(f"Error retrieving groups: {e}")
-    return groups_with_topics
-
-async def auto_reply(client: TelegramClient, event: events.NewMessage.Event, reply_message: str) -> None:
-    """
-    Automatically replies to messages with a predefined message.
-    """
-    try:
-        await client.send_message(event.sender_id, reply_message)
-        logging.info(f"Auto-reply sent to user {event.sender_id}")
-    except Exception as e:
-        logging.error(f"Error sending auto-reply to user {event.sender_id}: {e}")
-
-async def detect_spam(message: str) -> bool:
-    """
-    Detects spam messages using a Naive Bayes classifier.
-    """
-    if not spam_model or not vectorizer:
-        logging.error("Spam detection model or vectorizer is not loaded.")
-        return False
-    try:
-        message_vector = vectorizer.transform([message])
-        is_spam = spam_model.predict(message_vector)[0]
-        return is_spam
-    except Exception as e:
-        logging.error(f"Error during spam detection: {e}")
-        return False
-
-async def schedule_message(client: TelegramClient, user_id: int, message: str, send_time: datetime) -> None:
-    """
-    Sends a message to a user at a scheduled time.
-    """
-    delay = (send_time - datetime.now()).total_seconds()
-    if delay > 0:
-        await asyncio.sleep(delay)
-    await client.send_message(user_id, message)
 
 class ForwardingHistory:
     def __init__(self):
         self.history = []
+        self.deleted_messages = []
 
     def add_entry(self, source_group: str, target_group: str, message_id: int, timestamp: str) -> None:
         self.history.append({
@@ -85,18 +25,35 @@ class ForwardingHistory:
             "timestamp": timestamp,
         })
 
+    def add_deleted_message(self, group: str, message_id: int, timestamp: str) -> None:
+        self.deleted_messages.append({
+            "group": group,
+            "message_id": message_id,
+            "timestamp": timestamp,
+        })
+
     def get_history(self) -> list:
         return self.history
+
+    def get_deleted_messages(self) -> list:
+        return self.deleted_messages
 
 class ForwardingStatistics:
     def __init__(self):
         self.statistics = defaultdict(int)
+        self.deletion_statistics = defaultdict(int)
 
     def increment(self, group_id: int) -> None:
         self.statistics[group_id] += 1
 
+    def increment_deletion(self, group_id: int) -> None:
+        self.deletion_statistics[group_id] += 1
+
     def get_statistics(self) -> dict:
-        return self.statistics
+        return {
+            "forwarded": self.statistics,
+            "deleted": self.deletion_statistics
+        }
 
 class UserManagement:
     def __init__(self):
@@ -132,9 +89,10 @@ class TelegramBotGUI:
             [sg.Button("Login", key="-LOGIN-")],
             [sg.Text("Source Group:"), sg.Combo([], key="-SOURCE_GROUP-", size=(30, 1))],
             [sg.Button("Refresh Groups", key="-REFRESH_GROUPS-")],
-            [sg.Button("Schedule Message", key="-SCHEDULE_MESSAGE-")],
-            [sg.Button("View Forwarding History", key="-VIEW_HISTORY-")],
             [sg.Button("Forward Messages to Groups", key="-FORWARD_MESSAGES-")],
+            [sg.Button("Delete Forwarded Messages", key="-DELETE_FORWARDED-")],
+            [sg.Button("View Forwarding History", key="-VIEW_HISTORY-")],
+            [sg.Button("View Deletion History", key="-VIEW_DELETIONS-")],
             [sg.Multiline(size=(60, 10), key="-LOG-", disabled=True)],
         ]
 
@@ -150,14 +108,14 @@ class TelegramBotGUI:
                 asyncio.create_task(self.login(values["-PHONE-"], values["-CODE-"]))
             elif event == "-REFRESH_GROUPS-":
                 asyncio.create_task(self.refresh_groups())
-            elif event == "-SCHEDULE_MESSAGE-":
-                asyncio.create_task(self.schedule_message())
-            elif event == "-VIEW_HISTORY-":
-                self.view_forwarding_history()
-            elif event == "-VIEW_STATS-":
-                self.view_forwarding_statistics()
             elif event == "-FORWARD_MESSAGES-":
                 asyncio.create_task(self.forward_messages_to_groups())
+            elif event == "-DELETE_FORWARDED-":
+                asyncio.create_task(self.delete_forwarded_messages())
+            elif event == "-VIEW_HISTORY-":
+                self.view_forwarding_history()
+            elif event == "-VIEW_DELETIONS-":
+                self.view_deletion_history()
 
         self.window.close()
 
@@ -166,8 +124,18 @@ class TelegramBotGUI:
             self.log_message("Please enter a valid phone number starting with +.")
             return
         try:
-            self.client = TelegramClient(StringSession(), API_ID, API_HASH)
+            self.client = TelegramClient(
+                StringSession(),
+                API_ID,
+                API_HASH,
+                device_model="TelegramBot",
+                system_version="1.0",
+                app_version="1.0"
+            )
             await self.client.connect()
+            if await self.client.is_user_authorized():
+                self.log_message("Already authorized!")
+                return
             await self.client.send_code_request(phone)
             self.log_message("Verification code sent.")
         except Exception as e:
@@ -180,58 +148,25 @@ class TelegramBotGUI:
         try:
             await self.client.sign_in(phone, code)
             self.log_message("Login successful.")
+            await self.refresh_groups()
         except Exception as e:
             self.log_message(f"Error during login: {e}")
 
     async def refresh_groups(self) -> None:
         try:
-            self.groups_with_topics = await get_user_groups_with_topics(self.client)
+            self.groups_with_topics = []
+            async for dialog in self.client.iter_dialogs():
+                if dialog.is_group or (dialog.is_channel and dialog.megagroup):
+                    self.groups_with_topics.append((dialog, []))
             self.update_groups()
             self.log_message("Groups refreshed successfully.")
         except Exception as e:
             self.log_message(f"Error refreshing groups: {e}")
 
     def update_groups(self) -> None:
-        self.window["-SOURCE_GROUP-"].update([group.title for group, _ in self.groups_with_topics])
-
-    async def schedule_message(self) -> None:
-        user_id = sg.popup_get_text("Enter user ID:")
-        message = sg.popup_get_text("Enter your message:")
-        send_time = sg.popup_get_text("Enter send time (YYYY-MM-DD HH:MM:SS):")
-        if not user_id or not message or not send_time:
-            self.log_message("Invalid input for scheduling message.")
-            return
-        try:
-            send_time = datetime.strptime(send_time, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            self.log_message("Invalid date/time format. Please use YYYY-MM-DD HH:MM:SS.")
-            return
-
-        try:
-            await schedule_message(self.client, int(user_id), message, send_time)
-            self.log_message(f"Message scheduled for user {user_id} at {send_time}")
-        except Exception as e:
-            self.log_message(f"Error scheduling message: {e}")
-
-    def view_forwarding_history(self) -> None:
-        history = self.forwarding_history.get_history()
-        history_str = "\n".join(
-            [f"{entry['timestamp']}: Message {entry['message_id']} from {entry['source_group']} to {entry['target_group']}" for entry in history]
-        )
-        sg.popup("Forwarding History", history_str)
-
-    def view_forwarding_statistics(self) -> None:
-        stats = self.forwarding_statistics.get_statistics()
-        if not stats:
-            sg.popup("Forwarding Statistics", "No statistics available.")
-            return
-        stats_str = "\n".join([f"Group {group_id}: {count} messages forwarded" for group_id, count in stats.items()])
-        sg.popup("Forwarding Statistics", stats_str)
+        self.window["-SOURCE_GROUP-"].update(values=[group.title for group, _ in self.groups_with_topics])
 
     async def forward_messages_to_groups(self) -> None:
-        """
-        Configures forwarding messages from a source group to multiple target groups.
-        """
         await self.refresh_groups()
 
         source_group_titles = [group.title for group, _ in self.groups_with_topics]
@@ -281,9 +216,7 @@ class TelegramBotGUI:
 
         try:
             source_group_obj = next(group for group, _ in self.groups_with_topics if group.title == source_group)
-            target_group_objs = [
-                group for group, _ in self.groups_with_topics if group.title in target_groups
-            ]
+            target_group_objs = [group for group, _ in self.groups_with_topics if group.title in target_groups]
 
             if not target_group_objs:
                 self.log_message("No valid target groups selected.")
@@ -298,30 +231,106 @@ class TelegramBotGUI:
             async def handler(event):
                 for target_group in target_group_objs:
                     try:
+                        await asyncio.sleep(2)  # Rate limiting
                         await self.client.forward_messages(target_group.id, event.message)
                         self.forwarding_statistics.increment(target_group.id)
                         self.forwarding_history.add_entry(
-                            source_group_obj.title, target_group.title, event.message.id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            source_group_obj.title,
+                            target_group.title,
+                            event.message.id,
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         )
                         self.log_message(f"Message forwarded from {source_group_obj.title} to {target_group.title}")
                     except Exception as e:
                         self.log_message(f"Error forwarding message to {target_group.title}: {e}")
 
             self.active_handlers.add(handler_key)
-
             self.log_message(f"Forwarding messages from {source_group_obj.title} to {[tg.title for tg in target_group_objs]}")
         except Exception as e:
             self.log_message(f"Error setting up forwarding: {e}")
 
+    async def delete_forwarded_messages(self) -> None:
+        await self.refresh_groups()
+
+        group_titles = [group.title for group, _ in self.groups_with_topics]
+        layout = [
+            [sg.Text("Select groups to delete forwarded messages from (hold Ctrl for multiple):")],
+            [sg.Listbox(values=group_titles, size=(50, 10), key="-GROUPS-", select_mode="multiple")],
+            [sg.Button("Confirm", key="-CONFIRM-"), sg.Button("Cancel", key="-CANCEL-")]
+        ]
+
+        delete_window = sg.Window("Select Groups", layout)
+
+        try:
+            while True:
+                event, values = delete_window.read()
+                if event in (sg.WINDOW_CLOSED, "-CANCEL-"):
+                    break
+                elif event == "-CONFIRM-":
+                    selected = values["-GROUPS-"]
+                    if not selected:
+                        sg.popup("Please select at least one group.")
+                        continue
+
+                    selected_groups = [
+                        group for group, _ in self.groups_with_topics 
+                        if group.title in selected
+                    ]
+
+                    for group in selected_groups:
+                        try:
+                            async for message in self.client.iter_messages(group.id):
+                                if message.forward is not None:
+                                    await message.delete()
+                                    self.forwarding_statistics.increment_deletion(group.id)
+                                    self.forwarding_history.add_deleted_message(
+                                        group.title,
+                                        message.id,
+                                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    )
+                                    self.log_message(f"Deleted forwarded message {message.id} from {group.title}")
+                            
+                            self.log_message(f"Completed deletion of forwarded messages in {group.title}")
+                        except Exception as e:
+                            self.log_message(f"Error deleting messages in {group.title}: {e}")
+                    break
+        finally:
+            delete_window.close()
+
+    def view_forwarding_history(self) -> None:
+        history = self.forwarding_history.get_history()
+        if not history:
+            sg.popup("Forwarding History", "No messages have been forwarded yet.")
+            return
+        history_str = "\n".join(
+            [f"{entry['timestamp']}: Message {entry['message_id']} from {entry['source_group']} to {entry['target_group']}"
+             for entry in history]
+        )
+        sg.popup("Forwarding History", history_str, scrollable=True)
+
+    def view_deletion_history(self) -> None:
+        deleted = self.forwarding_history.get_deleted_messages()
+        if not deleted:
+            sg.popup("Deletion History", "No messages have been deleted yet.")
+            return
+        history_str = "\n".join(
+            [f"{entry['timestamp']}: Deleted message {entry['message_id']} from {entry['group']}"
+             for entry in deleted]
+        )
+        sg.popup("Deletion History", history_str, scrollable=True)
+
     def log_message(self, message: str, max_lines: int = 100) -> None:
         current_log = self.window["-LOG-"].get()
         log_lines = current_log.splitlines()
-        log_lines.append(message)
+        log_lines.append(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}: {message}")
         if len(log_lines) > max_lines:
             log_lines = log_lines[-max_lines:]
         self.window["-LOG-"].update("\n".join(log_lines))
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     gui = TelegramBotGUI()
     gui.start()
