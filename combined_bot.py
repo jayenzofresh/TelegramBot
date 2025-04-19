@@ -1,42 +1,51 @@
-import os
-import sys
 import asyncio
 import json
 import logging
+import os
+import sys
 from collections import defaultdict
+from datetime import datetime, timedelta
 from queue import Queue
+
+import PySimpleGUI as sg
+from config import API_HASH, API_ID
 from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RPCError
 from telethon.sessions import StringSession
-import PySimpleGUI as sg
-from config import API_ID, API_HASH
-from datetime import datetime, timedelta
+
 
 class ForwardingHistory:
     def __init__(self):
         self.history = []
         self.deleted_messages = []
 
-    def add_entry(self, source_group: str, target_group: str, message_id: int, timestamp: str) -> None:
-        self.history.append({
-            "source_group": source_group,
-            "target_group": target_group,
-            "message_id": message_id,
-            "timestamp": timestamp,
-        })
+    def add_entry(
+        self, source_group: str, target_group: str, message_id: int, timestamp: str
+    ) -> None:
+        self.history.append(
+            {
+                "source_group": source_group,
+                "target_group": target_group,
+                "message_id": message_id,
+                "timestamp": timestamp,
+            }
+        )
 
     def add_deleted_message(self, group: str, message_id: int, timestamp: str) -> None:
-        self.deleted_messages.append({
-            "group": group,
-            "message_id": message_id,
-            "timestamp": timestamp,
-        })
+        self.deleted_messages.append(
+            {
+                "group": group,
+                "message_id": message_id,
+                "timestamp": timestamp,
+            }
+        )
 
     def get_history(self) -> list:
         return self.history
 
     def get_deleted_messages(self) -> list:
         return self.deleted_messages
+
 
 class ForwardingStatistics:
     def __init__(self):
@@ -50,10 +59,8 @@ class ForwardingStatistics:
         self.deletion_statistics[group_id] += 1
 
     def get_statistics(self) -> dict:
-        return {
-            "forwarded": self.statistics,
-            "deleted": self.deletion_statistics
-        }
+        return {"forwarded": self.statistics, "deleted": self.deletion_statistics}
+
 
 class UserManagement:
     def __init__(self):
@@ -69,6 +76,7 @@ class UserManagement:
 
     def get_users(self) -> list:
         return list(self.users)
+
 
 class TelegramBotGUI:
     def __init__(self):
@@ -87,7 +95,10 @@ class TelegramBotGUI:
             [sg.Button("Send Verification Code", key="-SEND_CODE-")],
             [sg.Text("Verification Code:"), sg.Input(key="-CODE-", size=(30, 1))],
             [sg.Button("Login", key="-LOGIN-")],
-            [sg.Text("Source Group:"), sg.Combo([], key="-SOURCE_GROUP-", size=(30, 1))],
+            [
+                sg.Text("Source Group:"),
+                sg.Combo([], key="-SOURCE_GROUP-", size=(30, 1)),
+            ],
             [sg.Button("Refresh Groups", key="-REFRESH_GROUPS-")],
             [sg.Button("Forward Messages to Groups", key="-FORWARD_MESSAGES-")],
             [sg.Button("Delete Forwarded Messages", key="-DELETE_FORWARDED-")],
@@ -130,7 +141,7 @@ class TelegramBotGUI:
                 API_HASH,
                 device_model="TelegramBot",
                 system_version="1.0",
-                app_version="1.0"
+                app_version="1.0",
             )
             await self.client.connect()
             if await self.client.is_user_authorized():
@@ -164,7 +175,9 @@ class TelegramBotGUI:
             self.log_message(f"Error refreshing groups: {e}")
 
     def update_groups(self) -> None:
-        self.window["-SOURCE_GROUP-"].update(values=[group.title for group, _ in self.groups_with_topics])
+        self.window["-SOURCE_GROUP-"].update(
+            values=[group.title for group, _ in self.groups_with_topics]
+        )
 
     async def forward_messages_to_groups(self) -> None:
         await self.refresh_groups()
@@ -172,8 +185,18 @@ class TelegramBotGUI:
         source_group_titles = [group.title for group, _ in self.groups_with_topics]
         source_group_layout = [
             [sg.Text("Select the source group:")],
-            [sg.Listbox(values=source_group_titles, size=(50, 10), key="-SOURCE_GROUP-", select_mode="single")],
-            [sg.Button("Confirm Source Group", key="-CONFIRM_SOURCE_GROUP-"), sg.Button("Cancel", key="-CANCEL-")]
+            [
+                sg.Listbox(
+                    values=source_group_titles,
+                    size=(50, 10),
+                    key="-SOURCE_GROUP-",
+                    select_mode="single",
+                )
+            ],
+            [
+                sg.Button("Confirm Source Group", key="-CONFIRM_SOURCE_GROUP-"),
+                sg.Button("Cancel", key="-CANCEL-"),
+            ],
         ]
         source_group_window = sg.Window("Select Source Group", source_group_layout)
 
@@ -194,8 +217,18 @@ class TelegramBotGUI:
 
         target_group_layout = [
             [sg.Text("Select the target groups (hold Ctrl to select multiple):")],
-            [sg.Listbox(values=source_group_titles, size=(50, 10), key="-TARGET_GROUPS-", select_mode="multiple")],
-            [sg.Button("Confirm Target Groups", key="-CONFIRM_TARGET_GROUPS-"), sg.Button("Cancel", key="-CANCEL-")]
+            [
+                sg.Listbox(
+                    values=source_group_titles,
+                    size=(50, 10),
+                    key="-TARGET_GROUPS-",
+                    select_mode="multiple",
+                )
+            ],
+            [
+                sg.Button("Confirm Target Groups", key="-CONFIRM_TARGET_GROUPS-"),
+                sg.Button("Cancel", key="-CANCEL-"),
+            ],
         ]
         target_group_window = sg.Window("Select Target Groups", target_group_layout)
 
@@ -215,8 +248,16 @@ class TelegramBotGUI:
                     sg.popup("Please select at least one target group.")
 
         try:
-            source_group_obj = next(group for group, _ in self.groups_with_topics if group.title == source_group)
-            target_group_objs = [group for group, _ in self.groups_with_topics if group.title in target_groups]
+            source_group_obj = next(
+                group
+                for group, _ in self.groups_with_topics
+                if group.title == source_group
+            )
+            target_group_objs = [
+                group
+                for group, _ in self.groups_with_topics
+                if group.title in target_groups
+            ]
 
             if not target_group_objs:
                 self.log_message("No valid target groups selected.")
@@ -224,7 +265,9 @@ class TelegramBotGUI:
 
             handler_key = f"{source_group_obj.id}_to_{'_'.join([str(tg.id) for tg in target_group_objs])}"
             if handler_key in self.active_handlers:
-                self.log_message("Handler for this forwarding configuration is already active.")
+                self.log_message(
+                    "Handler for this forwarding configuration is already active."
+                )
                 return
 
             @self.client.on(events.NewMessage(chats=source_group_obj.id))
@@ -232,20 +275,28 @@ class TelegramBotGUI:
                 for target_group in target_group_objs:
                     try:
                         await asyncio.sleep(2)  # Rate limiting
-                        await self.client.forward_messages(target_group.id, event.message)
+                        await self.client.forward_messages(
+                            target_group.id, event.message
+                        )
                         self.forwarding_statistics.increment(target_group.id)
                         self.forwarding_history.add_entry(
                             source_group_obj.title,
                             target_group.title,
                             event.message.id,
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         )
-                        self.log_message(f"Message forwarded from {source_group_obj.title} to {target_group.title}")
+                        self.log_message(
+                            f"Message forwarded from {source_group_obj.title} to {target_group.title}"
+                        )
                     except Exception as e:
-                        self.log_message(f"Error forwarding message to {target_group.title}: {e}")
+                        self.log_message(
+                            f"Error forwarding message to {target_group.title}: {e}"
+                        )
 
             self.active_handlers.add(handler_key)
-            self.log_message(f"Forwarding messages from {source_group_obj.title} to {[tg.title for tg in target_group_objs]}")
+            self.log_message(
+                f"Forwarding messages from {source_group_obj.title} to {[tg.title for tg in target_group_objs]}"
+            )
         except Exception as e:
             self.log_message(f"Error setting up forwarding: {e}")
 
@@ -254,9 +305,23 @@ class TelegramBotGUI:
 
         group_titles = [group.title for group, _ in self.groups_with_topics]
         layout = [
-            [sg.Text("Select groups to delete forwarded messages from (hold Ctrl for multiple):")],
-            [sg.Listbox(values=group_titles, size=(50, 10), key="-GROUPS-", select_mode="multiple")],
-            [sg.Button("Confirm", key="-CONFIRM-"), sg.Button("Cancel", key="-CANCEL-")]
+            [
+                sg.Text(
+                    "Select groups to delete forwarded messages from (hold Ctrl for multiple):"
+                )
+            ],
+            [
+                sg.Listbox(
+                    values=group_titles,
+                    size=(50, 10),
+                    key="-GROUPS-",
+                    select_mode="multiple",
+                )
+            ],
+            [
+                sg.Button("Confirm", key="-CONFIRM-"),
+                sg.Button("Cancel", key="-CANCEL-"),
+            ],
         ]
 
         delete_window = sg.Window("Select Groups", layout)
@@ -273,7 +338,8 @@ class TelegramBotGUI:
                         continue
 
                     selected_groups = [
-                        group for group, _ in self.groups_with_topics 
+                        group
+                        for group, _ in self.groups_with_topics
                         if group.title in selected
                     ]
 
@@ -282,17 +348,25 @@ class TelegramBotGUI:
                             async for message in self.client.iter_messages(group.id):
                                 if message.forward is not None:
                                     await message.delete()
-                                    self.forwarding_statistics.increment_deletion(group.id)
+                                    self.forwarding_statistics.increment_deletion(
+                                        group.id
+                                    )
                                     self.forwarding_history.add_deleted_message(
                                         group.title,
                                         message.id,
-                                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     )
-                                    self.log_message(f"Deleted forwarded message {message.id} from {group.title}")
-                            
-                            self.log_message(f"Completed deletion of forwarded messages in {group.title}")
+                                    self.log_message(
+                                        f"Deleted forwarded message {message.id} from {group.title}"
+                                    )
+
+                            self.log_message(
+                                f"Completed deletion of forwarded messages in {group.title}"
+                            )
                         except Exception as e:
-                            self.log_message(f"Error deleting messages in {group.title}: {e}")
+                            self.log_message(
+                                f"Error deleting messages in {group.title}: {e}"
+                            )
                     break
         finally:
             delete_window.close()
@@ -303,8 +377,10 @@ class TelegramBotGUI:
             sg.popup("Forwarding History", "No messages have been forwarded yet.")
             return
         history_str = "\n".join(
-            [f"{entry['timestamp']}: Message {entry['message_id']} from {entry['source_group']} to {entry['target_group']}"
-             for entry in history]
+            [
+                f"{entry['timestamp']}: Message {entry['message_id']} from {entry['source_group']} to {entry['target_group']}"
+                for entry in history
+            ]
         )
         sg.popup("Forwarding History", history_str, scrollable=True)
 
@@ -314,8 +390,10 @@ class TelegramBotGUI:
             sg.popup("Deletion History", "No messages have been deleted yet.")
             return
         history_str = "\n".join(
-            [f"{entry['timestamp']}: Deleted message {entry['message_id']} from {entry['group']}"
-             for entry in deleted]
+            [
+                f"{entry['timestamp']}: Deleted message {entry['message_id']} from {entry['group']}"
+                for entry in deleted
+            ]
         )
         sg.popup("Deletion History", history_str, scrollable=True)
 
@@ -327,10 +405,11 @@ class TelegramBotGUI:
             log_lines = log_lines[-max_lines:]
         self.window["-LOG-"].update("\n".join(log_lines))
 
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     gui = TelegramBotGUI()
     gui.start()
